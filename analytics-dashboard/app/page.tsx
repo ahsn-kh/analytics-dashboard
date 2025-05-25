@@ -21,6 +21,10 @@ export default function Home() {
   const [uniqueVisitors, setUniqueVisitors] = useState<number>(0);
   const [topPages, setTopPages] = useState<TopPage[]>([]); // NEW STATE FOR TOP PAGES
 
+  // NEW STATE: For Date Range Filtering
+  const [startDate, setStartDate] = useState<string>('');
+  const [endDate, setEndDate] = useState<string>('');
+
   // --- Helper functions to get date/time strings in ISOString and UTC for Supabase ---
   const formatSupabaseDateTime = (date: Date) => {
     const year = date.getUTCFullYear();
@@ -56,25 +60,58 @@ export default function Home() {
     return formatSupabaseDateTime(date30DaysAgo);
   };
 
-  useEffect(() => {
-    trackPageView();
+  // --- NEW: Function to fetch all counts based on current filters ---
+  const fetchCounts = async () => {
+    // Convert state dates to Supabase format if they exist
+    // 'T00:00:00Z' for start of day, 'T23:59:59Z' for end of day, assuming UTC for the database
+    const startDateTime = startDate ? new Date(startDate + 'T00:00:00Z') : null;
+    const endDateTime = endDate ? new Date(endDate + 'T23:59:59Z') : null;
 
-    const timer = setTimeout(() => {
-      fetchInitialCounts();
-    }, 100); // 100ms delay
+    const formattedStartDate = startDateTime ? formatSupabaseDateTime(startDateTime) : null;
+    const formattedEndDate = endDateTime ? formatSupabaseDateTime(endDateTime) : null;
 
-    const fetchInitialCounts = async () => {
-      // --- Existing fetches for total and time-based counts ---
-      const { count: totalCount, error: totalError } = await supabase
-        .from('pageviews')
-        .select('*', { count: 'exact', head: true });
+    // --- Fetch Total Visits (now filtered by date range if provided) ---
+    let totalVisitsQuery = supabase
+      .from('pageviews')
+      .select('*', { count: 'exact', head: true });
 
-      if (totalError) {
-        console.error("Error fetching initial total pageview count:", totalError.message);
-      } else {
-        setTotalVisits(totalCount ?? 0);
-      }
+    if (formattedStartDate) {
+      totalVisitsQuery = totalVisitsQuery.gte('ts', formattedStartDate);
+    }
+    if (formattedEndDate) {
+      totalVisitsQuery = totalVisitsQuery.lte('ts', formattedEndDate);
+    }
+    const { count: totalCount, error: totalError } = await totalVisitsQuery;
 
+    if (totalError) {
+      console.error("Error fetching total pageview count:", totalError.message);
+    } else {
+      setTotalVisits(totalCount ?? 0);
+    }
+
+    // --- Fetch Unique Visitors (now filtered by date range if provided) ---
+    let uniqueVisitorsQuery = supabase
+      .from('unique_visitors')
+      .select('*', { count: 'exact', head: true });
+
+    if (formattedStartDate) {
+      uniqueVisitorsQuery = uniqueVisitorsQuery.gte('ts', formattedStartDate);
+    }
+    if (formattedEndDate) {
+      uniqueVisitorsQuery = uniqueVisitorsQuery.lte('ts', formattedEndDate);
+    }
+    const { count: uniqueVisitorsCount, error: uniqueVisitorsError } = await uniqueVisitorsQuery;
+
+    if (uniqueVisitorsError) {
+      console.error("Error fetching unique visitors count:", uniqueVisitorsError.message);
+    } else {
+      setUniqueVisitors(uniqueVisitorsCount ?? 0);
+    }
+
+    // --- Conditional Fetches for "Today", "Last 24 Hours", "Last 7 Days", "Last 30 Days" ---
+    // These will only fetch if NO custom date range is applied
+    if (!formattedStartDate && !formattedEndDate) {
+      // Visits Today
       const { count: todayCount, error: todayError } = await supabase
         .from('pageviews')
         .select('*', { count: 'exact', head: true })
@@ -86,6 +123,7 @@ export default function Home() {
         setVisitsToday(todayCount ?? 0);
       }
 
+      // Last 24 Hours
       const { count: twentyFourHoursCount, error: twentyFourHoursError } = await supabase
         .from('pageviews')
         .select('*', { count: 'exact', head: true })
@@ -97,6 +135,7 @@ export default function Home() {
         setVisits24Hours(twentyFourHoursCount ?? 0);
       }
 
+      // Last 7 Days
       const { count: sevenDaysCount, error: sevenDaysError } = await supabase
         .from('pageviews')
         .select('*', { count: 'exact', head: true })
@@ -108,6 +147,7 @@ export default function Home() {
         setVisits7Days(sevenDaysCount ?? 0);
       }
 
+      // Last 30 Days
       const { count: thirtyDaysCount, error: thirtyDaysError } = await supabase
         .from('pageviews')
         .select('*', { count: 'exact', head: true })
@@ -118,28 +158,35 @@ export default function Home() {
       } else {
         setVisits30Days(thirtyDaysCount ?? 0);
       }
+    } else {
+      // If a custom date range is applied, clear these specific counts as they are not relevant
+      setVisitsToday(0);
+      setVisits24Hours(0);
+      setVisits7Days(0);
+      setVisits30Days(0);
+    }
 
-      const { count: uniqueVisitorsCount, error: uniqueVisitorsError } = await supabase
-        .from('unique_visitors')
-        .select('*', { count: 'exact', head: true });
+    // --- Fetch Top Pages using RPC Function with date parameters ---
+    const { data: topPagesData, error: topPagesError } = await supabase
+      .rpc('get_top_pages', {
+        start_date: formattedStartDate,
+        end_date: formattedEndDate
+      });
 
-      if (uniqueVisitorsError) {
-        console.error("Error fetching initial unique visitors count:", uniqueVisitorsError.message);
-      } else {
-        setUniqueVisitors(uniqueVisitorsCount ?? 0);
-      }
+    if (topPagesError) {
+      console.error("Error fetching top pages:", topPagesError.message);
+    } else {
+      setTopPages(topPagesData as TopPage[] || []);
+    }
+  };
 
-      // --- NEW: Fetch Top Pages using RPC Function ---
-      const { data: topPagesData, error: topPagesError } = await supabase
-        .rpc('get_top_pages'); // Call the database function
+  useEffect(() => {
+    trackPageView();
 
-      if (topPagesError) {
-        console.error("Error fetching top pages:", topPagesError.message);
-      } else {
-        // The data returned by RPC will match the TABLE() definition in the function
-        setTopPages(topPagesData as TopPage[] || []);
-      }
-    };
+    // Initial fetch of counts
+    const timer = setTimeout(() => {
+      fetchCounts();
+    }, 100); // 100ms delay
 
     // --- Existing Realtime Subscriptions ---
     const existingChannels = supabase.getChannels();
@@ -157,33 +204,12 @@ export default function Home() {
         { event: 'INSERT', schema: 'public', table: 'pageviews' },
         (payload) => {
           console.log('New pageview inserted:', payload);
-          setTotalVisits((prevTotal) => prevTotal + 1);
-
-          const insertedDate = new Date(payload.new.ts);
-          
-          const startOfToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate(), 0, 0, 0, 0));
-          if (insertedDate >= startOfToday) {
-            setVisitsToday((prevToday) => prevToday + 1);
-          }
-
-          const twentyFourHoursAgo = new Date(new Date().getTime() - (24 * 60 * 60 * 1000));
-          if (insertedDate >= twentyFourHoursAgo) {
-            setVisits24Hours((prev24Hours) => prev24Hours + 1);
-          }
-
-          const sevenDaysAgo = new Date(new Date().getTime() - (7 * 24 * 60 * 60 * 1000));
-          if (insertedDate >= sevenDaysAgo) {
-            setVisits7Days((prev7Days) => prev7Days + 1);
-          }
-
-          const thirtyDaysAgo = new Date(new Date().getTime() - (30 * 24 * 60 * 60 * 1000));
-          if (insertedDate >= thirtyDaysAgo) {
-            setVisits30Days((prev30Days) => prev30Days + 1);
-          }
-
-          // Trigger a re-fetch of top pages on new insert for real-time update
-          // This will re-fetch all counts, including top pages (via RPC)
-          fetchInitialCounts();
+          // When a new pageview comes in, we want to update the overall counts
+          // and potentially the top pages. The simplest way is to re-fetch all.
+          // Also, clear any active date filters so real-time updates always reflect global data.
+          setStartDate('');
+          setEndDate('');
+          setTimeout(() => fetchCounts(), 0); // Re-fetch all counts after state update
         }
       )
       .subscribe();
@@ -195,7 +221,9 @@ export default function Home() {
         { event: 'INSERT', schema: 'public', table: 'unique_visitors' },
         (payload) => {
           console.log('New unique visitor inserted:', payload);
-          setUniqueVisitors((prevUnique) => prevUnique + 1);
+          setUniqueVisitors((prevUnique) => prevUnique + 1); // Simple increment for unique visitors
+          // No need to re-fetch all here unless unique visitors heavily impacts top pages ranking
+          // (which it usually doesn't directly, only via pageviews).
         }
       )
       .subscribe();
@@ -206,7 +234,7 @@ export default function Home() {
       supabase.removeChannel(pageviewsChannel);
       supabase.removeChannel(uniqueVisitorsChannel);
     };
-  }, []);
+  }, []); // Empty dependency array means this useEffect runs once on mount and cleanup on unmount
 
   // --- UI Rendering ---
   return (
@@ -216,7 +244,7 @@ export default function Home() {
           Website Analytics
         </h1>
 
-        {/* --- NEW: Navigation Links Section --- */}
+        {/* --- Navigation Links Section --- */}
         <div className="mt-8 mb-10 p-6 bg-gray-50 rounded-lg border border-gray-200">
           <h2 className="text-xl font-semibold text-gray-800 mb-4">Explore Pages:</h2>
           <div className="flex flex-wrap justify-center gap-4">
@@ -234,6 +262,51 @@ export default function Home() {
         </div>
         {/* --- End Navigation Links Section --- */}
 
+        {/* --- NEW: Date Range Filter Section --- */}
+        <div className="mt-8 mb-10 p-6 bg-gray-50 rounded-lg border border-gray-200">
+          <h2 className="text-xl font-semibold text-gray-800 mb-4">Filter by Date Range:</h2>
+          <div className="flex flex-wrap justify-center items-end gap-4">
+            <div className="flex flex-col">
+              <label htmlFor="startDate" className="text-sm font-medium text-gray-700 mb-1 text-left">Start Date:</label>
+              <input
+                type="date"
+                id="startDate"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            <div className="flex flex-col">
+              <label htmlFor="endDate" className="text-sm font-medium text-gray-700 mb-1 text-left">End Date:</label>
+              <input
+                type="date"
+                id="endDate"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+            <button
+              onClick={fetchCounts} // Call the new fetchCounts function
+              className="px-6 py-3 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors duration-200 self-end"
+            >
+              Apply Filter
+            </button>
+            <button
+              onClick={() => {
+                setStartDate('');
+                setEndDate('');
+                // Use setTimeout to allow state to update before fetching
+                setTimeout(() => fetchCounts(), 0);
+              }}
+              className="px-6 py-3 bg-gray-400 text-white rounded-md hover:bg-gray-500 transition-colors duration-200 self-end"
+            >
+              Clear Filter
+            </button>
+          </div>
+        </div>
+        {/* --- End Date Range Filter Section --- */}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-6 gap-6">
           {/* ... Existing cards for total, unique, today, 24h, 7d, 30d visits ... */}
           <div className="bg-blue-50 p-6 rounded-lg border border-blue-200">
@@ -250,6 +323,7 @@ export default function Home() {
             </p>
           </div>
 
+          {/* These will show 0 or N/A when a custom filter is applied */}
           <div className="bg-green-50 p-6 rounded-lg border border-green-200">
             <h2 className="text-xl font-semibold text-green-800 mb-2">Visits Today</h2>
             <p className="text-5xl font-bold text-green-900 leading-none">
@@ -279,7 +353,7 @@ export default function Home() {
           </div>
         </div>
 
-        {/* --- NEW: Section for Top Pages --- */}
+        {/* --- Section for Top Pages --- */}
         <div className="mt-10 bg-white p-8 rounded-lg shadow-xl text-center max-w-2xl w-full mx-auto border border-gray-200">
           <h2 className="text-2xl font-extrabold text-gray-800 mb-4">Top Pages Visited</h2>
           {topPages.length > 0 ? (
