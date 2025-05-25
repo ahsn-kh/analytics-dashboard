@@ -2,6 +2,12 @@
 import { supabase } from '@/lib/supabase';
 
 export async function trackPageView() {
+  // Ensure this code only runs in the browser environment
+  if (typeof window === 'undefined') {
+    console.log("Skipping page view tracking on server side.");
+    return;
+  }
+
   console.log("Attempting to track page view...");
 
   // Get or create a unique visitor ID
@@ -15,16 +21,24 @@ export async function trackPageView() {
   }
 
   // Get the current page path
-  const currentPath = window.location.pathname; // This gets '/about', '/', '/blog/post-name', etc.
+  const currentPath = window.location.pathname;
+
+  // Get referrer (if available). document.referrer is empty string for direct navigation.
+  const referrer = document.referrer || null;
+
+  // Get User-Agent string (browser and OS info)
+  const userAgent = navigator.userAgent || null;
 
   // 1. Insert into pageviews table
   const { data: pageviewData, error: pageviewError } = await supabase
     .from('pageviews')
     .insert({
-      site_id: 'my-portfolio-site', // Make sure this matches your chosen site_id
-      ts: new Date().toISOString(),
-      ref: document.referrer || null,
-      path: currentPath, // <--- ADD THIS LINE
+      site_id: 'my-portfolio-site', // Make sure this matches your chosen site_id in Supabase
+      ts: new Date().toISOString(), // Use current timestamp
+      ref: referrer,       // Now storing the actual referrer
+      path: currentPath,
+      user_id: visitorId,  // Link pageview to the visitor ID
+      user_agent: userAgent // Store the user agent string
     });
 
   if (pageviewError) {
@@ -38,8 +52,10 @@ export async function trackPageView() {
     const { data: uniqueData, error: uniqueError } = await supabase
       .from('unique_visitors')
       .insert({
-        id: visitorId,
+        id: visitorId, // This should match the column name for the unique visitor ID in your unique_visitors table
         created_at: new Date().toISOString(),
+        // You might want to add more visitor specific info here later, like user_agent, etc.
+        // For simplicity, we are keeping it basic as per your existing structure.
       });
 
     if (uniqueError) {
