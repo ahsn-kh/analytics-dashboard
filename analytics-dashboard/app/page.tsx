@@ -4,6 +4,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { trackPageView } from '@/lib/analytics';
+import Link from 'next/link'; // NEW IMPORT: Import Link component for navigation
 
 // Define a type for your top pages data
 interface TopPage {
@@ -18,7 +19,7 @@ export default function Home() {
   const [visits7Days, setVisits7Days] = useState<number>(0);
   const [visits30Days, setVisits30Days] = useState<number>(0);
   const [uniqueVisitors, setUniqueVisitors] = useState<number>(0);
-  const [topPages, setTopPages] = useState<TopPage[]>([]); // <--- NEW STATE FOR TOP PAGES
+  const [topPages, setTopPages] = useState<TopPage[]>([]); // NEW STATE FOR TOP PAGES
 
   // --- Helper functions to get date/time strings in ISOString and UTC for Supabase ---
   const formatSupabaseDateTime = (date: Date) => {
@@ -214,6 +215,24 @@ export default function Home() {
         <h1 className="text-3xl sm:text-4xl font-extrabold text-blue-700 mb-6">
           Website Analytics
         </h1>
+
+        {/* --- NEW: Navigation Links Section --- */}
+        <div className="mt-8 mb-10 p-6 bg-gray-50 rounded-lg border border-gray-200">
+          <h2 className="text-xl font-semibold text-gray-800 mb-4">Explore Pages:</h2>
+          <div className="flex flex-wrap justify-center gap-4">
+            <Link href="/" className="px-6 py-3 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors duration-200">
+              Home
+            </Link>
+            <Link href="/about" className="px-6 py-3 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors duration-200">
+              About Us
+            </Link>
+            <Link href="/contact" className="px-6 py-3 bg-purple-500 text-white rounded-md hover:bg-purple-600 transition-colors duration-200">
+              Contact Us
+            </Link>
+            {/* Add more links here for any other pages you create */}
+          </div>
+        </div>
+        {/* --- End Navigation Links Section --- */}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-6 gap-6">
           {/* ... Existing cards for total, unique, today, 24h, 7d, 30d visits ... */}
