@@ -571,7 +571,7 @@ export default function Home() {
             <span className="text-gray-700 text-sm md:text-base">
               Logged in as: <span className="font-semibold">{session.user.email}</span>
             </span>
-            <Link href="/dashboard/sites/manage" className="px-4 py-2 bg-purple-600 text-white rounded-md text-sm hover:bg-purple-700 transition-colors duration-200">
+            <Link href="/dashboard/sites" className="px-4 py-2 bg-purple-600 text-white rounded-md text-sm hover:bg-purple-700 transition-colors duration-200">
               Manage Sites
             </Link>
             <Link href="/logout" className="px-4 py-2 bg-red-600 text-white rounded-md text-sm hover:bg-red-700 transition-colors duration-200">
