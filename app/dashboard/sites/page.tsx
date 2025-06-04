@@ -5,7 +5,11 @@ import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import type { Session } from '@supabase/supabase-js';
 import Link from 'next/link';
 
-// Define Site interface (already present in app/page.tsx, but good to have here too)
+// --- NEW IMPORTS FOR AUTH UI ---
+import { Auth } from '@supabase/auth-ui-react';
+import { ThemeSupa } from '@supabase/auth-ui-shared';
+
+// Define Site interface
 interface Site {
   id: string;
   name: string;
@@ -27,7 +31,6 @@ export default function ManageSitesPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // --- Environment variable for Cloudflare Worker URL ---
-  // Ensure this is set in your Vercel project's environment variables
   const cloudflareWorkerUrl = process.env.NEXT_PUBLIC_CLOUDFLARE_WORKER_URL;
 
   // --- Fetch session on component mount ---
@@ -304,6 +307,7 @@ export default function ManageSitesPage() {
                     <button
                       onClick={() => {
                         const snippet = generateTrackingSnippet(site.id);
+                        document.execCommand('copy'); // Using execCommand for broader compatibility in iframes
                         navigator.clipboard.writeText(snippet)
                           .then(() => alert('Tracking snippet copied to clipboard!')) // Using alert for simplicity
                           .catch(err => console.error('Failed to copy snippet:', err));
