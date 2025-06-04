@@ -1,6 +1,9 @@
 // import type { Metadata } from "next"; // Keep this if you need Metadata
 // import { Geist, Geist_Mono } from "next/font/google"; // COMMENT OUT or REMOVE this line
 import "./globals.css";
+import type { Metadata } from "next"; // Add this line
+// import { Inter } from "next/font/google"; // Your existing import
+// import "./globals.css"; // Your existing import
 
 // COMMENT OUT or REMOVE these blocks:
 // const geistSans = Geist({
