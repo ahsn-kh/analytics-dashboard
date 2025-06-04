@@ -110,33 +110,34 @@ export default function Dashboard() {
   const dashboardSiteId = process.env.NEXT_PUBLIC_ANALYTICS_DASHBOARD_SITE_ID;
 
   // --- Helper functions ---
-  const formatSupabaseDateTime = (date: Date): string => {
+  // FIX: Wrap formatSupabaseDateTime in useCallback to ensure stability
+  const formatSupabaseDateTime = useCallback((date: Date): string => {
     return date.toISOString();
-  };
+  }, []); // Empty dependency array as it doesn't depend on anything external
 
   const getStartOfTodayUtc = useCallback((): string => {
     const now = new Date();
     const startOfTodayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
     return formatSupabaseDateTime(startOfTodayUtc);
-  }, []);
+  }, [formatSupabaseDateTime]); // Dependency added
 
   const get24HoursAgoUtc = useCallback((): string => {
     const now = new Date();
     const date24HoursAgo = new Date(now.getTime() - (24 * 60 * 60 * 1000));
     return formatSupabaseDateTime(date24HoursAgo);
-  }, []);
+  }, [formatSupabaseDateTime]); // Dependency added
 
   const get7DaysAgoUtc = useCallback((): string => {
     const now = new Date();
     const date7DaysAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
     return formatSupabaseDateTime(date7DaysAgo);
-  }, []);
+  }, [formatSupabaseDateTime]); // Dependency added
 
   const get30DaysAgoUtc = useCallback((): string => {
     const now = new Date();
     const date30DaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
     return formatSupabaseDateTime(date30DaysAgo);
-  }, []);
+  }, [formatSupabaseDateTime]); // Dependency added
 
   const parseUserAgent = useCallback((userAgentString: string | null): { browser: string; os: string; } => {
     if (!userAgentString || userAgentString === 'Unknown') {
@@ -312,14 +313,9 @@ export default function Dashboard() {
 
     try {
       // Fetch Total Visits & Unique Visitors for the selected site
-      // Cast selectedSiteId to UUID explicitly
       const { data: countsData, error: countsError } = await supabase
         .rpc('count_pageviews_and_visitors_by_site', {
-          p_site_id: selectedSiteId as string // Pass as string, but the RPC expects UUID.
-                                              // The SQL function should handle the cast if needed,
-                                              // or ensure the RPC parameter is TEXT if that's what's sent.
-                                              // Supabase client handles type conversion for UUIDs often,
-                                              // but explicit casting in SQL or ensuring client sends correct type is best.
+          p_site_id: selectedSiteId as string // Supabase client handles UUID conversion from string
         });
 
       if (countsError) {
@@ -374,7 +370,7 @@ export default function Dashboard() {
       // Fetch Top Pages using RPC Function with site_id
       const { data: topPagesData, error: topPagesError } = await supabase
         .rpc('get_top_pages', {
-          p_site_id: selectedSiteId, // Supabase client handles UUID conversion from string
+          p_site_id: selectedSiteId,
           p_start_date: formattedStartDate,
           p_end_date: formattedEndDate,
         });
@@ -384,7 +380,7 @@ export default function Dashboard() {
       // Fetch Daily Pageviews using RPC `get_daily_pageviews_for_chart` with site_id
       const { data: dailyData, error: dailyError } = await supabase
         .rpc('get_daily_pageviews_for_chart', {
-          p_site_id: selectedSiteId, // Supabase client handles UUID conversion from string
+          p_site_id: selectedSiteId,
           p_start_date: formattedStartDate,
           p_end_date: formattedEndDate,
         });
@@ -397,7 +393,7 @@ export default function Dashboard() {
       // Fetch Top Referrers with site_id
       const { data: topReferrersData, error: topReferrersError } = await supabase
         .rpc('get_top_referrers', {
-          p_site_id: selectedSiteId, // Supabase client handles UUID conversion from string
+          p_site_id: selectedSiteId,
           p_start_date: formattedStartDate,
           p_end_date: formattedEndDate,
         });
@@ -407,7 +403,7 @@ export default function Dashboard() {
       // Fetch Top User Agents with site_id
       const { data: topUserAgentsData, error: topUserAgentsError } = await supabase
         .rpc('get_top_user_agents', {
-          p_site_id: selectedSiteId, // Supabase client handles UUID conversion from string
+          p_site_id: selectedSiteId,
           p_start_date: formattedStartDate,
           p_end_date: formattedEndDate,
         });
@@ -420,7 +416,7 @@ export default function Dashboard() {
 
       // Fetch Country Pageviews using RPC
       const { data: countryData, error: countryError } = await supabase.rpc('get_country_pageviews', {
-        p_site_id: selectedSiteId, // Supabase client handles UUID conversion from string
+        p_site_id: selectedSiteId,
         p_start_date: formattedStartDate,
         p_end_date: formattedEndDate,
       });
