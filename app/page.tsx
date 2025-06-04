@@ -6,22 +6,15 @@ import type { Session } from '@supabase/supabase-js';
 import { Auth } from '@supabase/auth-ui-react';
 import { ThemeSupa } from '@supabase/auth-ui-shared';
 import Link from 'next/link';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'; // For the map
-import 'leaflet/dist/leaflet.css'; // Leaflet CSS
-import L from 'leaflet'; // Leaflet library for custom marker icon
+import dynamic from 'next/dynamic'; // Import dynamic from next/dynamic
 
-// Fix for default Leaflet icon issue with Webpack
-// https://github.com/PaulLeCam/react-leaflet/issues/453
-delete (L.Icon.Default.prototype as any)._get  IconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon-2x.png',
-  iconUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-shadow.png',
-});
+// Recharts for all charts (Daily Pageviews and Country Pageviews)
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from 'recharts';
 
+// For User Agent Parsing
+import { UAParser } from 'ua-parser-js'; // Ensure 'ua-parser-js' is installed
 
-// Define Site interface
+// Define types for your data structures
 interface Site {
   id: string;
   name: string;
@@ -30,7 +23,27 @@ interface Site {
   created_at: string;
 }
 
-// Define GeoData interface
+interface TopPage {
+  path: string;
+  count: number;
+}
+
+interface DailyPageView {
+  day_label: string;
+  views_count: number;
+}
+
+interface TopReferrer {
+  referrer: string;
+  count: number;
+}
+
+interface TopUserAgent {
+  user_agent: string;
+  count: number;
+  parsed?: { browser: string; os: string; };
+}
+
 interface CountryPageview {
   country: string;
   total_pageviews: number;
@@ -38,29 +51,104 @@ interface CountryPageview {
   latest_longitude: number | null;
 }
 
+// Dynamically import MapContainer and L (Leaflet) to disable SSR
+// This resolves the "window is not defined" error
+const MapContainer = dynamic(() => import('react-leaflet').then(mod => mod.MapContainer), { ssr: false });
+const TileLayer = dynamic(() => import('react-leaflet').then(mod => mod.TileLayer), { ssr: false });
+const Marker = dynamic(() => import('react-leaflet').then(mod => mod.Marker), { ssr: false });
+const Popup = dynamic(() => import('react-leaflet').then(mod => mod.Popup), { ssr: false });
+
+// Import L directly for the icon fix, but ensure it's only used client-side
+let L: typeof import('leaflet');
+if (typeof window !== 'undefined') {
+  L = require('leaflet');
+  // Fix for default Leaflet icon issue with Webpack
+  // https://github.com/PaulLeCam/react-leaflet/issues/453
+  delete (L.Icon.Default.prototype as any)._getIconUrl; // Corrected typo here
+  L.Icon.Default.mergeOptions({
+    iconRetinaUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon-2x.png',
+    iconUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png',
+    shadowUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-shadow.png',
+  });
+}
+
+
 export default function Dashboard() {
   const supabase = createClientComponentClient();
 
+  // --- AUTHENTICATION STATES ---
   const [session, setSession] = useState<Session | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
+
+  // --- SITE MANAGEMENT STATES ---
   const [sites, setSites] = useState<Site[]>([]);
   const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
+
+  // --- DASHBOARD DATA STATES ---
   const [totalVisits, setTotalVisits] = useState<number | null>(null);
   const [uniqueVisitors, setUniqueVisitors] = useState<number | null>(null);
   const [visitsToday, setVisitsToday] = useState<number | null>(null);
-  const [dailyPageviews, setDailyPageviews] = useState<any[]>([]);
-  const [topPages, setTopPages] = useState<any[]>([]);
-  const [countryPageviews, setCountryPageviews] = useState<CountryPageview[]>([]); // New state for geo data
+  const [visits24Hours, setVisits24Hours] = useState<number | null>(null);
+  const [visits7Days, setVisits7Days] = useState<number | null>(null);
+  const [visits30Days, setVisits30Days] = useState<number | null>(null);
+  const [topPages, setTopPages] = useState<TopPage[]>([]);
+  const [dailyPageviews, setDailyPageviews] = useState<DailyPageView[]>([]);
+  const [topReferrers, setTopReferrers] = useState<TopReferrer[]>([]);
+  const [topUserAgents, setTopUserAgents] = useState<TopUserAgent[]>([]);
+  const [countryPageviews, setCountryPageviews] = useState<CountryPageview[]>([]);
 
+  // --- FILTERING STATES ---
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // Environment variable for Cloudflare Worker URL
+  // --- LOADING & ERROR STATES ---
+  const [isLoading, setIsLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+
+  // Environment variables
   const cloudflareWorkerUrl = process.env.NEXT_PUBLIC_CLOUDFLARE_WORKER_URL;
-  // Dedicated Site ID for the dashboard's own analytics
   const dashboardSiteId = process.env.NEXT_PUBLIC_ANALYTICS_DASHBOARD_SITE_ID;
+
+  // --- Helper functions ---
+  const formatSupabaseDateTime = (date: Date): string => {
+    return date.toISOString();
+  };
+
+  const getStartOfTodayUtc = useCallback((): string => {
+    const now = new Date();
+    const startOfTodayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+    return formatSupabaseDateTime(startOfTodayUtc);
+  }, []);
+
+  const get24HoursAgoUtc = useCallback((): string => {
+    const now = new Date();
+    const date24HoursAgo = new Date(now.getTime() - (24 * 60 * 60 * 1000));
+    return formatSupabaseDateTime(date24HoursAgo);
+  }, []);
+
+  const get7DaysAgoUtc = useCallback((): string => {
+    const now = new Date();
+    const date7DaysAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+    return formatSupabaseDateTime(date7DaysAgo);
+  }, []);
+
+  const get30DaysAgoUtc = useCallback((): string => {
+    const now = new Date();
+    const date30DaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
+    return formatSupabaseDateTime(date30DaysAgo);
+  }, []);
+
+  const parseUserAgent = useCallback((userAgentString: string | null): { browser: string; os: string; } => {
+    if (!userAgentString || userAgentString === 'Unknown') {
+      return { browser: 'Unknown', os: 'Unknown' };
+    }
+    const parser = new UAParser(userAgentString);
+    const browser = parser.getBrowser();
+    const os = parser.getOS();
+    const browserName = browser.name ? `${browser.name}${browser.version ? ` ${browser.version.split('.')[0]}` : ''}` : 'Unknown Browser';
+    const osName = os.name ? `${os.name}${os.version ? ` ${os.version}` : ''}` : 'Unknown OS';
+    return { browser: browserName, os: osName };
+  }, []);
 
   // --- Fetch session on component mount ---
   useEffect(() => {
@@ -74,6 +162,25 @@ export default function Dashboard() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, currentSession) => {
         setSession(currentSession);
+        if (event === 'SIGNED_OUT') {
+          // Clear all states if user signs out
+          setSites([]);
+          setSelectedSiteId(null);
+          setTotalVisits(0);
+          setUniqueVisitors(0);
+          setVisitsToday(0);
+          setVisits24Hours(0);
+          setVisits7Days(0);
+          setVisits30Days(0);
+          setTopPages([]);
+          setDailyPageviews([]);
+          setTopReferrers([]);
+          setTopUserAgents([]);
+          setCountryPageviews([]);
+          setStartDate('');
+          setEndDate('');
+          setDashboardError(null);
+        }
       }
     );
 
@@ -82,20 +189,29 @@ export default function Dashboard() {
 
   // --- Fetch user's sites and set initial selected site ---
   useEffect(() => {
-    const fetchSites = async () => {
-      if (!session?.user?.id) return;
+    const fetchUserSites = async () => {
+      if (!session?.user?.id) {
+        setSites([]);
+        setSelectedSiteId(null);
+        return;
+      }
+
+      setIsLoading(true); // General loading for sites
+      setDashboardError(null);
+
       const { data, error: fetchError } = await supabase
         .from('sites')
-        .select('id, name, domain')
+        .select('id, name, domain, user_id, created_at')
         .eq('user_id', session.user.id)
         .order('created_at', { ascending: false });
 
       if (fetchError) {
-        console.error('Error fetching sites:', fetchError.message);
-        setError('Failed to load your sites.');
+        console.error('Error fetching user sites:', fetchError.message);
+        setDashboardError('Failed to load your sites: ' + fetchError.message);
+        setSites([]);
+        setSelectedSiteId(null);
       } else {
         setSites(data || []);
-        // Set the first site as default selected, or the dashboard site if available
         if (data && data.length > 0) {
           const defaultSite = data.find(site => site.id === dashboardSiteId) || data[0];
           setSelectedSiteId(defaultSite.id);
@@ -103,177 +219,290 @@ export default function Dashboard() {
           setSelectedSiteId(null);
         }
       }
+      setIsLoading(false);
     };
 
     if (session && !loadingSession) {
-      fetchSites();
+      fetchUserSites();
     }
   }, [session, loadingSession, supabase, dashboardSiteId]);
 
-  // --- Track dashboard pageview (separate from client sites) ---
-  useEffect(() => {
-    const trackPageView = async (siteId: string, userId: string) => {
-      if (!cloudflareWorkerUrl) {
-        console.warn('Dashboard tracking not configured: Cloudflare Worker URL missing.');
-        return;
-      }
-      try {
-        const pageviewData = {
-          site_id: siteId,
-          path: window.location.pathname,
-          referrer: document.referrer || null,
-          user_agent: navigator.userAgent || null,
-          browser_language: navigator.language || null,
-          screen_resolution: `${window.screen.width}x${window.screen.height}`,
-          viewport_width: window.innerWidth,
-          viewport_height: window.innerHeight,
-          user_id: userId,
-        };
-        await fetch(cloudflareWorkerUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(pageviewData),
-          credentials: 'include',
-        });
-      } catch (err) {
-        console.error('Failed to track dashboard pageview:', err);
-      }
-    };
 
-    if (session && !loadingSession && dashboardSiteId) {
+  // --- Track dashboard pageview (separate from client sites) ---
+  const trackDashboardPageView = useCallback(async () => {
+    if (!cloudflareWorkerUrl || !dashboardSiteId || !session?.user?.id) {
+      console.warn('Dashboard tracking not configured: Worker URL, Dashboard Site ID, or session missing.');
+      return;
+    }
+    try {
+      const pageviewData = {
+        site_id: dashboardSiteId,
+        path: window.location.pathname,
+        referrer: document.referrer || null,
+        user_agent: navigator.userAgent || null,
+        browser_language: navigator.language || null,
+        screen_resolution: `${window.screen.width}x${window.screen.height}`,
+        viewport_width: window.innerWidth,
+        viewport_height: window.innerHeight,
+        user_id: session.user.id,
+      };
+      await fetch(cloudflareWorkerUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pageviewData),
+        credentials: 'include',
+      });
+    } catch (err) {
+      console.error('Failed to track dashboard pageview:', err);
+    }
+  }, [cloudflareWorkerUrl, dashboardSiteId, session?.user?.id]);
+
+  // This useEffect should only trigger once per page load to track the dashboard itself
+  useEffect(() => {
+    if (session && !loadingSession) {
       const trackTimer = setTimeout(() => {
-        trackPageView(dashboardSiteId, session.user.id);
+        trackDashboardPageView();
       }, 500);
       return () => clearTimeout(trackTimer);
     }
-  }, [session, loadingSession, dashboardSiteId, cloudflareWorkerUrl]);
+  }, [session, loadingSession, trackDashboardPageView]); // Dependencies for tracking the dashboard's own pageview
 
 
   // --- Main data fetching logic ---
-  const fetchData = useCallback(async () => {
+  const fetchDashboardData = useCallback(async () => {
     if (!selectedSiteId || !session?.user?.id) {
       setTotalVisits(0);
       setUniqueVisitors(0);
       setVisitsToday(0);
-      setDailyPageviews([]);
+      setVisits24Hours(0);
+      setVisits7Days(0);
+      setVisits30Days(0);
       setTopPages([]);
-      setCountryPageviews([]); // Clear geo data
+      setDailyPageviews([]);
+      setTopReferrers([]);
+      setTopUserAgents([]);
+      setCountryPageviews([]);
+      setDashboardError(null);
       return;
     }
 
     setIsLoading(true);
-    setError(null);
+    setDashboardError(null);
+
+    let formattedStartDate: string | null = null;
+    let formattedEndDate: string | null = null;
+
+    if (startDate) {
+      const dateObj = new Date(startDate + 'T00:00:00Z');
+      if (!isNaN(dateObj.getTime())) {
+        formattedStartDate = formatSupabaseDateTime(dateObj);
+      } else {
+        console.warn("Invalid start date string:", startDate);
+      }
+    }
+
+    if (endDate) {
+      const dateObj = new Date(endDate + 'T23:59:59Z');
+      if (!isNaN(dateObj.getTime())) {
+        formattedEndDate = formatSupabaseDateTime(dateObj);
+      } else {
+        console.warn("Invalid end date string:", endDate);
+      }
+    }
 
     try {
-      // Fetch Total Visits
-      const { data: totalData, error: totalError } = await supabase
-        .from('pageviews')
-        .select('*', { count: 'exact' })
-        .eq('site_id', selectedSiteId)
-        .gte('created_at', startDate || '1970-01-01T00:00:00Z')
-        .lte('created_at', endDate ? `${endDate}T23:59:59Z` : new Date().toISOString());
+      // Fetch Total Visits & Unique Visitors for the selected site
+      // Cast selectedSiteId to UUID explicitly
+      const { data: countsData, error: countsError } = await supabase
+        .rpc('count_pageviews_and_visitors_by_site', {
+          p_site_id: selectedSiteId as string // Pass as string, but the RPC expects UUID.
+                                              // The SQL function should handle the cast if needed,
+                                              // or ensure the RPC parameter is TEXT if that's what's sent.
+                                              // Supabase client handles type conversion for UUIDs often,
+                                              // but explicit casting in SQL or ensuring client sends correct type is best.
+        });
 
-      if (totalError) throw totalError;
-      setTotalVisits(totalData?.length || 0);
+      if (countsError) {
+        console.error('Error fetching total counts by site:', countsError.message);
+        setTotalVisits(0);
+        setUniqueVisitors(0);
+      } else {
+        setTotalVisits(countsData?.[0]?.total_pageviews || 0);
+        setUniqueVisitors(countsData?.[0]?.total_unique_visitors || 0);
+      }
 
-      // Fetch Unique Visitors
-      const { data: uniqueData, error: uniqueError } = await supabase
-        .from('unique_visitors')
-        .select('*', { count: 'exact' })
-        .eq('site_id', selectedSiteId)
-        .gte('date', startDate || '1970-01-01')
-        .lte('date', endDate || new Date().toISOString().split('T')[0]);
+      // Conditional Fetches for "Today", "Last 24 Hours", "Last 7 Days", "Last 30 Days"
+      if (!formattedStartDate && !formattedEndDate) {
+        const { count: todayCount, error: todayError } = await supabase
+          .from('pageviews')
+          .select('*', { count: 'exact', head: true })
+          .eq('site_id', selectedSiteId)
+          .gte('created_at', getStartOfTodayUtc());
+        if (todayError) console.error("Error fetching visits today:", todayError.message);
+        setVisitsToday(todayCount ?? 0);
 
-      if (uniqueError) throw uniqueError;
-      setUniqueVisitors(uniqueData?.length || 0);
+        const { count: twentyFourHoursCount, error: twentyFourHoursError } = await supabase
+          .from('pageviews')
+          .select('*', { count: 'exact', head: true })
+          .eq('site_id', selectedSiteId)
+          .gte('created_at', get24HoursAgoUtc());
+        if (twentyFourHoursError) console.error("Error fetching visits last 24 hours:", twentyFourHoursError.message);
+        setVisits24Hours(twentyFourHoursCount ?? 0);
 
-      // Fetch Visits Today
-      const today = new Date().toISOString().split('T')[0];
-      const { data: visitsTodayData, error: visitsTodayError } = await supabase
-        .from('pageviews')
-        .select('*', { count: 'exact' })
-        .eq('site_id', selectedSiteId)
-        .gte('created_at', `${today}T00:00:00Z`)
-        .lte('created_at', `${today}T23:59:59Z`);
+        const { count: sevenDaysCount, error: sevenDaysError } = await supabase
+          .from('pageviews')
+          .select('*', { count: 'exact', head: true })
+          .eq('site_id', selectedSiteId)
+          .gte('created_at', get7DaysAgoUtc());
+        if (sevenDaysError) console.error("Error fetching visits last 7 days:", sevenDaysError.message);
+        setVisits7Days(sevenDaysCount ?? 0);
 
-      if (visitsTodayError) throw visitsTodayError;
-      setVisitsToday(visitsTodayData?.length || 0);
+        const { count: thirtyDaysCount, error: thirtyDaysError } = await supabase
+          .from('pageviews')
+          .select('*', { count: 'exact', head: true })
+          .eq('site_id', selectedSiteId)
+          .gte('created_at', get30DaysAgoUtc());
+        if (thirtyDaysError) console.error("Error fetching visits last 30 days:", thirtyDaysError.message);
+        setVisits30Days(thirtyDaysCount ?? 0);
+      } else {
+        setVisitsToday(null);
+        setVisits24Hours(null);
+        setVisits7Days(null);
+        setVisits30Days(null);
+      }
 
-      // Fetch Daily Pageviews (Materialized View)
-      const { data: dailyData, error: dailyError } = await supabase
-        .from('daily_pageviews_mv')
-        .select('date, total_pageviews')
-        .eq('site_id', selectedSiteId)
-        .gte('date', startDate || '1970-01-01')
-        .lte('date', endDate || new Date().toISOString().split('T')[0])
-        .order('date', { ascending: true });
-
-      if (dailyError) throw dailyError;
-      setDailyPageviews(dailyData || []);
-
-      // Fetch Top Pages
+      // Fetch Top Pages using RPC Function with site_id
       const { data: topPagesData, error: topPagesError } = await supabase
-        .from('pageviews')
-        .select('path', { count: 'exact' })
-        .eq('site_id', selectedSiteId)
-        .gte('created_at', startDate || '1970-01-01T00:00:00Z')
-        .lte('created_at', endDate ? `${endDate}T23:59:59Z` : new Date().toISOString())
-        .order('count', { ascending: false }) // Order by count
-        .limit(10); // Limit to top 10 pages
+        .rpc('get_top_pages', {
+          p_site_id: selectedSiteId, // Supabase client handles UUID conversion from string
+          p_start_date: formattedStartDate,
+          p_end_date: formattedEndDate,
+        });
+      if (topPagesError) console.error("Error fetching top pages:", topPagesError.message);
+      setTopPages(topPagesData as TopPage[] || []);
 
-      if (topPagesError) throw topPagesError;
-      // Manually group and count paths as direct count on select is not working as expected for distinct paths
-      const aggregatedTopPages = topPagesData?.reduce((acc: { [key: string]: number }, curr: { path: string }) => {
-        acc[curr.path] = (acc[curr.path] || 0) + 1;
-        return acc;
-      }, {});
-      const sortedTopPages = Object.entries(aggregatedTopPages || {})
-        .map(([path, count]) => ({ path, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 10); // Ensure top 10
+      // Fetch Daily Pageviews using RPC `get_daily_pageviews_for_chart` with site_id
+      const { data: dailyData, error: dailyError } = await supabase
+        .rpc('get_daily_pageviews_for_chart', {
+          p_site_id: selectedSiteId, // Supabase client handles UUID conversion from string
+          p_start_date: formattedStartDate,
+          p_end_date: formattedEndDate,
+        });
+      if (dailyError) console.error('Error fetching daily pageviews for chart:', dailyError.message);
+      setDailyPageviews(dailyData ? dailyData.map((d: any) => ({
+        day_label: d.day_label,
+        views_count: d.views_count,
+      })) : []);
 
-      setTopPages(sortedTopPages || []);
+      // Fetch Top Referrers with site_id
+      const { data: topReferrersData, error: topReferrersError } = await supabase
+        .rpc('get_top_referrers', {
+          p_site_id: selectedSiteId, // Supabase client handles UUID conversion from string
+          p_start_date: formattedStartDate,
+          p_end_date: formattedEndDate,
+        });
+      if (topReferrersError) console.error("Error fetching top referrers:", topReferrersError.message);
+      setTopReferrers(topReferrersData as TopReferrer[] || []);
 
-      // --- NEW: Fetch Country Pageviews using RPC ---
+      // Fetch Top User Agents with site_id
+      const { data: topUserAgentsData, error: topUserAgentsError } = await supabase
+        .rpc('get_top_user_agents', {
+          p_site_id: selectedSiteId, // Supabase client handles UUID conversion from string
+          p_start_date: formattedStartDate,
+          p_end_date: formattedEndDate,
+        });
+      if (topUserAgentsError) console.error("Error fetching top user agents:", topUserAgentsError.message);
+      const parsedUserAgents = (topUserAgentsData as TopUserAgent[] || []).map(ua => ({
+        ...ua,
+        parsed: parseUserAgent(ua.user_agent),
+      }));
+      setTopUserAgents(parsedUserAgents);
+
+      // Fetch Country Pageviews using RPC
       const { data: countryData, error: countryError } = await supabase.rpc('get_country_pageviews', {
-        p_site_id: selectedSiteId,
-        p_start_date: startDate || '1970-01-01T00:00:00Z',
-        p_end_date: endDate ? `${endDate}T23:59:59Z` : new Date().toISOString(),
+        p_site_id: selectedSiteId, // Supabase client handles UUID conversion from string
+        p_start_date: formattedStartDate,
+        p_end_date: formattedEndDate,
       });
 
       if (countryError) throw countryError;
       setCountryPageviews(countryData || []);
 
-    } catch (fetchError: any) {
-      console.error('Error fetching dashboard data:', fetchError.message);
-      setError('Failed to load dashboard data: ' + fetchError.message);
+    } catch (error: any) {
+      console.error('Exception fetching dashboard data:', error);
+      setDashboardError('An unexpected error occurred while loading data: ' + error.message);
     } finally {
       setIsLoading(false);
     }
-  }, [selectedSiteId, startDate, endDate, session?.user?.id, supabase]);
+  }, [selectedSiteId, startDate, endDate, session, supabase, formatSupabaseDateTime, getStartOfTodayUtc, get24HoursAgoUtc, get7DaysAgoUtc, get30DaysAgoUtc, parseUserAgent]);
 
-  // --- Trigger data fetch when dependencies change ---
+
+  // --- useEffect for triggering dashboard data fetch and managing Realtime subscriptions ---
   useEffect(() => {
     if (session && selectedSiteId) {
-      fetchData();
+      const fetchTimer = setTimeout(() => {
+        fetchDashboardData();
+      }, 100);
+
+      // --- Realtime Subscriptions (now site-specific) ---
+      const channelPrefix = `realtime_site_${selectedSiteId}`; // Unique prefix per site
+      const existingChannels = supabase.getChannels();
+
+      // Remove only channels related to this specific site ID
+      for (const ch of existingChannels) {
+        if (ch.topic.startsWith(`realtime:pageviews_channel:${selectedSiteId}`) ||
+            ch.topic.startsWith(`realtime:unique_visitors_channel:${selectedSiteId}`)) {
+          supabase.removeChannel(ch);
+          console.log('Removed existing channel:', ch.topic);
+        }
+      }
+
+      const pageviewsChannel = supabase
+        .channel(`realtime:pageviews_channel:${selectedSiteId}`)
+        .on('postgres_changes', {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'pageviews',
+          filter: `site_id=eq.${selectedSiteId}`
+        }, (payload) => {
+          console.log('Realtime Pageview Insert:', payload);
+          fetchDashboardData();
+        })
+        .subscribe();
+
+      const uniqueVisitorsChannel = supabase
+        .channel(`realtime:unique_visitors_channel:${selectedSiteId}`)
+        .on('postgres_changes', {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'unique_visitors',
+          filter: `site_id=eq.${selectedSiteId}`
+        }, (payload) => {
+          console.log('Realtime Unique Visitor Insert:', payload);
+          fetchDashboardData();
+        })
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(pageviewsChannel);
+        supabase.removeChannel(uniqueVisitorsChannel);
+        clearTimeout(fetchTimer);
+      };
+    } else {
+      // If no session or no site selected, ensure all channels are removed
+      const existingChannels = supabase.getChannels();
+      for (const ch of existingChannels) {
+        if (ch.topic.startsWith('realtime:pageviews_channel:') || ch.topic.startsWith('realtime:unique_visitors_channel:')) {
+          supabase.removeChannel(ch);
+        }
+      }
     }
-  }, [selectedSiteId, startDate, endDate, session, fetchData]);
+  }, [session, selectedSiteId, supabase, fetchDashboardData, startDate, endDate]);
 
-  // --- Handle date filter application ---
-  const handleApplyFilter = () => {
-    fetchData(); // Re-fetch data with new date range
-  };
 
-  // --- Handle date filter clearing ---
-  const handleClearFilter = () => {
-    setStartDate('');
-    setEndDate('');
-    // fetchData will be triggered by useEffect due to state change
-  };
-
-  // --- Handle session loading and non-logged-in state ---
+  // --- Render Logic ---
   if (loadingSession) {
-    return <div className="min-h-screen flex items-center justify-center text-xl text-gray-700">Loading authentication...</div>;
+    return <div className="min-h-screen flex items-center justify-center text-xl text-gray-700">Loading session...</div>;
   }
 
   if (!session) {
@@ -281,7 +510,6 @@ export default function Dashboard() {
       <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-4">
         <div className="w-full max-w-md bg-white p-8 rounded-lg shadow-md border border-gray-200">
           <h2 className="text-2xl font-bold text-center text-gray-800 mb-6">Sign In / Sign Up</h2>
-          <p className="text-center text-gray-600 mb-4">Please log in to view your dashboard.</p>
           <Auth
             supabaseClient={supabase}
             appearance={{ theme: ThemeSupa }}
@@ -293,163 +521,243 @@ export default function Dashboard() {
     );
   }
 
-  // --- Render Dashboard ---
-  const selectedSite = sites.find(site => site.id === selectedSiteId);
-
   return (
-    <div className="min-h-screen bg-gray-100 p-4">
+    <main className="min-h-screen bg-gray-100 p-4">
+      {/* --- Header Section --- */}
       <header className="bg-white shadow-lg p-4 mb-6 rounded-lg flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0 md:space-x-4">
         <h1 className="text-3xl font-extrabold text-gray-900">Dashboard</h1>
-        <div className="flex items-center space-x-4">
-          <label htmlFor="site-select" className="sr-only">Select Site</label>
-          <select
-            id="site-select"
-            value={selectedSiteId || ''}
-            onChange={(e) => setSelectedSiteId(e.target.value)}
-            className="p-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 text-gray-700"
-          >
-            {sites.length === 0 ? (
-              <option value="">No sites available</option>
-            ) : (
-              sites.map((site) => (
-                <option key={site.id} value={site.id}>
-                  {site.name} ({site.domain})
-                </option>
-              ))
-            )}
-          </select>
-          <span className="text-gray-700 text-sm md:text-base">
-            Logged in as: <span className="font-semibold">{session.user.email}</span>
-          </span>
-          <Link href="/dashboard/sites" className="px-4 py-2 bg-purple-600 text-white rounded-md text-sm hover:bg-purple-700 transition-colors duration-200">
-            Manage Sites
-          </Link>
-          <Link href="/logout" className="px-4 py-2 bg-red-600 text-white rounded-md text-sm hover:bg-red-700 transition-colors duration-200">
-            Logout
-          </Link>
+        <div className="flex flex-col md:flex-row items-center space-y-4 md:space-y-0 md:space-x-4 w-full md:w-auto">
+          {/* Site Selector */}
+          <div className="w-full md:w-auto">
+            <label htmlFor="site-select" className="sr-only">Select Site</label>
+            <select
+              id="site-select"
+              value={selectedSiteId || ''}
+              onChange={(e) => setSelectedSiteId(e.target.value)}
+              className="block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+            >
+              {sites.length === 0 ? (
+                <option value="">No Sites Available</option>
+              ) : (
+                sites.map((site) => (
+                  <option key={site.id} value={site.id}>
+                    {site.name} ({site.domain})
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
+
+          {/* User & Links */}
+          <div className="flex items-center space-x-4">
+            <span className="text-gray-700 text-sm md:text-base">
+              Logged in as: <span className="font-semibold">{session.user.email}</span>
+            </span>
+            <Link href="/dashboard/sites" className="px-4 py-2 bg-purple-600 text-white rounded-md text-sm hover:bg-purple-700 transition-colors duration-200">
+              Manage Sites
+            </Link>
+            <Link href="/logout" className="px-4 py-2 bg-red-600 text-white rounded-md text-sm hover:bg-red-700 transition-colors duration-200">
+              Logout
+            </Link>
+          </div>
         </div>
       </header>
 
-      {error && (
+      {/* --- Dashboard Data Display --- */}
+      {dashboardError && (
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-6" role="alert">
           <strong className="font-bold">Error!</strong>
-          <span className="block sm:inline"> {error}</span>
+          <span className="block sm:inline"> {dashboardError}</span>
         </div>
       )}
 
-      {!selectedSiteId && !isLoading && sites.length > 0 && (
-        <div className="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded relative mb-6" role="alert">
-          <strong className="font-bold">Heads up!</strong>
-          <span className="block sm:inline"> Please select a site from the dropdown to view analytics.</span>
-        </div>
-      )}
-      {!selectedSiteId && !isLoading && sites.length === 0 && (
-        <div className="bg-blue-100 border border-blue-400 text-blue-700 px-4 py-3 rounded relative mb-6" role="alert">
-          <strong className="font-bold">Welcome!</strong>
-          <span className="block sm:inline"> You haven't added any sites yet. Go to <Link href="/dashboard/sites" className="underline font-semibold">Manage Sites</Link> to add your first website.</span>
-        </div>
+      {isLoading && selectedSiteId && (
+        <p className="text-blue-600 text-xl text-center mb-6">Loading dashboard data for selected site...</p>
       )}
 
-      {selectedSiteId && (
+      {!isLoading && !selectedSiteId && sites.length > 0 && (
+        <p className="text-gray-600 text-xl text-center mb-6">Please select a site from the dropdown above to view its analytics.</p>
+      )}
+
+      {!isLoading && selectedSiteId && (
         <>
-          {/* --- Date Filter Section --- */}
-          <div className="bg-white p-6 rounded-lg shadow-md mb-6 border border-gray-200">
+          {/* --- Navigation Links Section (for testing pageviews) --- */}
+          <div className="mt-8 mb-10 p-6 bg-gray-50 rounded-lg border border-gray-200">
+            <h2 className="text-xl font-semibold text-gray-800 mb-4">Explore Pages:</h2>
+            <div className="flex flex-wrap justify-center gap-4">
+              <Link href="/" className="px-6 py-3 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors duration-200">
+                Home
+              </Link>
+              <Link href="/about" className="px-6 py-3 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors duration-200">
+                About Us
+              </Link>
+              <Link href="/contact" className="px-6 py-3 bg-purple-500 text-white rounded-md hover:bg-purple-600 transition-colors duration-200">
+                Contact Us
+              </Link>
+            </div>
+          </div>
+
+          {/* --- Date Range Filter Section --- */}
+          <div className="mt-8 mb-10 p-6 bg-gray-50 rounded-lg border border-gray-200">
             <h2 className="text-xl font-semibold text-gray-800 mb-4">Filter by Date Range:</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-              <div>
-                <label htmlFor="start-date" className="block text-sm font-medium text-gray-700 mb-1">Start Date:</label>
+            <div className="flex flex-wrap justify-center items-end gap-4">
+              <div className="flex flex-col">
+                <label htmlFor="startDate" className="text-sm font-medium text-gray-700 mb-1 text-left">Start Date:</label>
                 <input
                   type="date"
-                  id="start-date"
+                  id="startDate"
                   value={startDate}
                   onChange={(e) => setStartDate(e.target.value)}
-                  className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                  className="p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
-              <div>
-                <label htmlFor="end-date" className="block text-sm font-medium text-gray-700 mb-1">End Date:</label>
+              <div className="flex flex-col">
+                <label htmlFor="endDate" className="text-sm font-medium text-gray-700 mb-1 text-left">End Date:</label>
                 <input
                   type="date"
-                  id="end-date"
+                  id="endDate"
                   value={endDate}
                   onChange={(e) => setEndDate(e.target.value)}
-                  className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                  className="p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
-              <div className="flex space-x-2">
-                <button
-                  onClick={handleApplyFilter}
-                  className="flex-1 py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                >
-                  Apply Filter
-                </button>
-                <button
-                  onClick={handleClearFilter}
-                  className="flex-1 py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                >
-                  Clear Filter
-                </button>
-              </div>
+              <button
+                onClick={fetchDashboardData}
+                className="px-6 py-3 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors duration-200 self-end"
+                disabled={isLoading}
+              >
+                {isLoading ? 'Loading...' : 'Apply Filter'}
+              </button>
+              <button
+                onClick={() => {
+                  setStartDate('');
+                  setEndDate('');
+                }}
+                className="px-6 py-3 bg-gray-400 text-white rounded-md hover:bg-gray-500 transition-colors duration-200 self-end"
+                disabled={isLoading}
+              >
+                Clear Filter
+              </button>
             </div>
           </div>
 
-          {/* --- Core Metrics --- */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-            <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200 text-center">
-              <h3 className="text-lg font-semibold text-gray-700">Total Visits</h3>
-              <p className="text-4xl font-bold text-blue-600 mt-2">{isLoading ? '...' : totalVisits}</p>
+          {/* --- Main Analytics Counters Grid --- */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-6 gap-6">
+            <div className="bg-blue-50 p-6 rounded-lg border border-blue-200">
+              <h2 className="text-xl font-semibold text-blue-800 mb-2">Total Visits</h2>
+              <p className="text-5xl font-bold text-blue-900 leading-none">
+                {totalVisits}
+              </p>
             </div>
-            <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200 text-center">
-              <h3 className="text-lg font-semibold text-gray-700">Unique Visitors</h3>
-              <p className="text-4xl font-bold text-green-600 mt-2">{isLoading ? '...' : uniqueVisitors}</p>
+
+            <div className="bg-cyan-50 p-6 rounded-lg border border-cyan-200">
+              <h2 className="text-xl font-semibold text-cyan-800 mb-2">Unique Visitors</h2>
+              <p className="text-5xl font-bold text-cyan-900 leading-none">
+                {uniqueVisitors}
+              </p>
             </div>
-            <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200 text-center">
-              <h3 className="text-lg font-semibold text-gray-700">Visits Today</h3>
-              <p className="text-4xl font-bold text-purple-600 mt-2">{isLoading ? '...' : visitsToday}</p>
+
+            <div className="bg-green-50 p-6 rounded-lg border border-green-200">
+              <h2 className="text-xl font-semibold text-green-800 mb-2">Visits Today</h2>
+              <p className="text-5xl font-bold text-green-900 leading-none">
+                {visitsToday}
+              </p>
+            </div>
+
+            <div className="bg-purple-50 p-6 rounded-lg border border-purple-200">
+              <h2 className="text-xl font-semibold text-purple-800 mb-2">Last 24 Hours</h2>
+              <p className="text-5xl font-bold text-purple-900 leading-none">
+                {visits24Hours}
+              </p>
+            </div>
+
+            <div className="bg-orange-50 p-6 rounded-lg border border-orange-200">
+              <h2 className="text-xl font-semibold text-orange-800 mb-2">Last 7 Days</h2>
+              <p className="text-5xl font-bold text-orange-900 leading-none">
+                {visits7Days}
+              </p>
+            </div>
+
+            <div className="bg-red-50 p-6 rounded-lg border border-red-200">
+              <h2 className="text-xl font-semibold text-red-800 mb-2">Last 30 Days</h2>
+              <p className="text-5xl font-bold text-red-900 leading-none">
+                {visits30Days}
+              </p>
             </div>
           </div>
 
-          {/* --- Daily Pageviews Chart --- */}
-          <div className="bg-white p-6 rounded-lg shadow-md mb-6 border border-gray-200">
-            <h2 className="text-xl font-semibold text-gray-800 mb-4">Daily Pageviews</h2>
-            {isLoading ? (
-              <div className="h-64 flex items-center justify-center text-gray-500">Loading chart...</div>
-            ) : dailyPageviews.length > 0 ? (
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={dailyPageviews} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" />
-                  <YAxis />
-                  <Tooltip />
-                  <Bar dataKey="total_pageviews" fill="#8884d8" name="Pageviews" />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-gray-500 text-center">No daily pageview data for the selected period.</p>
-            )}
-          </div>
-
-          {/* --- Top Pages --- */}
-          <div className="bg-white p-6 rounded-lg shadow-md mb-6 border border-gray-200">
-            <h2 className="text-xl font-semibold text-gray-800 mb-4">Top Pages</h2>
-            {isLoading ? (
-              <div className="h-32 flex items-center justify-center text-gray-500">Loading top pages...</div>
-            ) : topPages.length > 0 ? (
-              <ul className="divide-y divide-gray-200">
+          {/* --- Section for Top Pages --- */}
+          <div className="mt-10 bg-white p-8 rounded-lg shadow-xl text-center max-w-2xl w-full mx-auto border border-gray-200">
+            <h2 className="text-2xl font-extrabold text-gray-800 mb-4">Top Pages Visited</h2>
+            {topPages.length > 0 ? (
+              <ul className="text-left space-y-2">
                 {topPages.map((page, index) => (
-                  <li key={index} className="py-3 flex justify-between items-center text-gray-700">
-                    <span className="truncate flex-grow mr-4">{page.path}</span>
-                    <span className="font-semibold text-blue-600">{page.count} visits</span>
+                  <li key={index} className="flex justify-between items-center text-lg text-gray-700">
+                    <span className="font-medium truncate">{page.path === '/' ? '(Homepage)' : page.path}</span>
+                    <span className="font-bold text-gray-900">{page.count} visits</span>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="text-gray-500 text-center">No top page data for the selected period.</p>
+              <p className="text-gray-500">No page data available yet or being loaded...</p>
+            )}
+          </div>
+
+          {/* --- NEW: Section for Top Referrers --- */}
+          <div className="mt-10 bg-white p-8 rounded-lg shadow-xl text-center max-w-2xl w-full mx-auto border border-gray-200">
+            <h2 className="text-2xl font-extrabold text-gray-800 mb-4">Top Referrers</h2>
+            {topReferrers.length > 0 ? (
+              <ul className="text-left space-y-2">
+                {topReferrers.map((data, index) => (
+                  <li key={index} className="flex justify-between items-center text-lg text-gray-700">
+                    <span className="font-medium truncate">{data.referrer}</span>
+                    <span className="font-bold text-gray-900">{data.count} visits</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-gray-500">No referrer data available yet.</p>
+            )}
+          </div>
+
+          {/* --- NEW: Section for Top Browsers/OS (User Agents) --- */}
+          <div className="mt-10 bg-white p-8 rounded-lg shadow-xl text-center max-w-2xl w-full mx-auto border border-gray-200">
+            <h2 className="text-2xl font-extrabold text-gray-800 mb-4">Top User Agents</h2>
+            {topUserAgents.length > 0 ? (
+              <ul className="text-left space-y-2">
+                {topUserAgents.map((data, index) => (
+                  <li key={index} className="flex justify-between items-center text-lg text-gray-700">
+                    <span className="font-medium truncate">{data.parsed?.browser || data.user_agent}</span>
+                    <span className="font-bold text-gray-900">{data.count} visits</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-gray-500">No user agent data available yet.</p>
+            )}
+          </div>
+
+          {/* --- NEW: Daily Pageviews Chart (using Recharts) --- */}
+          <div className="mt-10 bg-white p-8 rounded-lg shadow-xl max-w-4xl w-full mx-auto border border-gray-200">
+            <h2 className="text-2xl font-extrabold text-gray-800 mb-4 text-center">Daily Pageviews</h2>
+            {dailyPageviews.length > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={dailyPageviews} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="day_label" />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Line type="monotone" dataKey="views_count" stroke="#8884d8" name="Pageviews" />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-gray-500 text-center">No daily pageview data available for this range.</p>
             )}
           </div>
 
           {/* --- NEW: Geographical Data Section --- */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-10">
             {/* Country Pageviews Bar Chart */}
             <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200">
               <h2 className="text-xl font-semibold text-gray-800 mb-4">Pageviews by Country</h2>
@@ -475,37 +783,41 @@ export default function Dashboard() {
               <h2 className="text-xl font-semibold text-gray-800 mb-4">Pageviews Map</h2>
               {isLoading ? (
                 <div className="h-64 flex items-center justify-center text-gray-500">Loading map...</div>
-              ) : countryPageviews.some(c => c.latest_latitude && c.latest_longitude) ? (
+              ) : countryPageviews.some(c => c.latest_latitude !== null && c.latest_longitude !== null) ? (
                 <div className="h-80 w-full rounded-md overflow-hidden">
-                  <MapContainer
-                    center={[0, 0]} // Default center, will adjust with data
-                    zoom={2}
-                    scrollWheelZoom={true}
-                    style={{ height: '100%', width: '100%' }}
-                  >
-                    <TileLayer
-                      attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    />
-                    {countryPageviews.map((data, index) => (
-                      data.latest_latitude !== null && data.latest_longitude !== null && (
-                        <Marker key={index} position={[data.latest_latitude, data.latest_longitude]}>
-                          <Popup>
-                            <strong>{data.country}</strong><br />
-                            Pageviews: {data.total_pageviews}
-                          </Popup>
-                        </Marker>
-                      )
-                    ))}
-                  </MapContainer>
+                  {/* Only render MapContainer if L is defined (client-side) */}
+                  {typeof window !== 'undefined' && L && (
+                    <MapContainer
+                      center={[0, 0]} // Default center, will adjust with data
+                      zoom={2}
+                      scrollWheelZoom={true}
+                      style={{ height: '100%', width: '100%' }}
+                    >
+                      <TileLayer
+                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                      />
+                      {countryPageviews.map((data, index) => (
+                        data.latest_latitude !== null && data.latest_longitude !== null && (
+                          <Marker key={index} position={[data.latest_latitude, data.latest_longitude]}>
+                            <Popup>
+                              <strong>{data.country}</strong><br />
+                              Pageviews: {data.total_pageviews}
+                            </Popup>
+                          </Marker>
+                        )
+                      ))}
+                    </MapContainer>
+                  )}
                 </div>
               ) : (
                 <p className="text-gray-500 text-center">No geographical data with coordinates available for the selected period.</p>
               )}
             </div>
           </div>
+          <p className="text-center text-gray-500 text-sm mt-8">(Counts update in real-time when new visits are recorded!)</p>
         </>
       )}
-    </div>
+    </main>
   );
 }
