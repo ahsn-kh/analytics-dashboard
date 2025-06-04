@@ -376,28 +376,28 @@ export default function Home() {
   useEffect(() => {
     // Only track pageview for the dashboard's own page if a valid site ID is available
     // and the session is active (to prevent tracking during logout or initial load without session)
-    if (session && selectedSiteId && !loadingSession) { // Ensure not tracking during initial session loading
+    if (session && !loadingSession) {  // Ensure not tracking during initial session loading
         // Track dashboard views against the currently selected *client site*.
         // This means if you switch between sites in the dashboard, the dashboard's own views
         // will be recorded against the *currently selected client site*.
-        const trackingSiteIdForDashboardView = selectedSiteId;
+        const trackingSiteIdForDashboardView = process.env.NEXT_PUBLIC_ANALYTICS_DASHBOARD_SITE_ID;
 
         // If you prefer to track dashboard views against a dedicated 'dashboard' site ID (fixed),
         // uncomment the line below and ensure you have NEXT_PUBLIC_ANALYTICS_DASHBOARD_SITE_ID configured.
         // const trackingSiteIdForDashboardView = process.env.NEXT_PUBLIC_ANALYTICS_DASHBOARD_SITE_ID || null;
 
         if (trackingSiteIdForDashboardView) {
-            // Adding a small delay to ensure everything is ready before tracking
-            const trackTimer = setTimeout(() => {
-                trackPageView(trackingSiteIdForDashboardView, session.user.id);
-            }, 500); // Increased delay slightly
+          // Adding a small delay to ensure everything is ready before tracking
+          const trackTimer = setTimeout(() => {
+              trackPageView(trackingSiteIdForDashboardView, session.user.id);
+          }, 500); // Increased delay slightly
 
-            return () => clearTimeout(trackTimer); // Clean up timer
-        } else {
-            console.warn("Dashboard pageview not tracked: No site selected or dashboard site ID configured.");
+          return () => clearTimeout(trackTimer); // Clean up timer
+      } else {
+            console.warn("Dashboard pageview not tracked: NEXT_PUBLIC_ANALYTICS_DASHBOARD_SITE_ID is not configured.");
         }
     }
-  }, [session, selectedSiteId, loadingSession]); // Dependencies for tracking the dashboard's own pageview
+  }, [session, loadingSession]); // Dependencies for tracking the dashboard's own pageview
 
 
   // --- useEffect for fetching dashboard data and managing Realtime subscriptions ---
